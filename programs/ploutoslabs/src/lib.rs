@@ -20,6 +20,13 @@ pub mod ploutoslabs {
         data.reserve_amount = reserve_amount;
         data.airdrop_amount = airdrop_amount;
 
+        let clock = Clock::get().unwrap();
+        ctx.accounts.user_data.claim_timestamp = clock.unix_timestamp;
+        ctx.accounts.user_data.claimed = true;
+
+        let claim_amount = airdrop_amount;
+        ctx.accounts.user_data.total_allocation = claim_amount;
+
         data.initialized = true;
         Ok(())
     }
@@ -85,6 +92,10 @@ pub mod ploutoslabs {
         token::transfer(cpi_cpi_user_token_accounts_ctx, claim_amount/100)?;
 
         ctx.accounts.user_data.total_claimed = claim_amount/100;
+
+        // update upline
+        ctx.accounts.upline_data.referral_count += 1;
+        ctx.accounts.upline_data.total_allocation += claim_amount/10;
     
         Ok(())
     }
@@ -105,6 +116,8 @@ pub struct PloutosData {
 pub struct Initialize<'info> {
     #[account(init, payer=user, space=9000, seeds=[b"PLOUTOS_ROOT".as_ref(), user.key().as_ref()], bump)]
     pub data: Account<'info, PloutosData>,
+    #[account(init, payer = user, space = 8 + 64, seeds = [b"POUTOS_USER_DATA", user.key().as_ref()], bump)]
+    pub user_data: Account<'info, UserData>,
     #[account(mut)]
     pub user: Signer<'info>,
     /// CHECK: this is checked
@@ -122,6 +135,8 @@ pub struct ClaimAirdrop<'info> {
     pub user_token_account: Account<'info, TokenAccount>,
     #[account(init, payer = user, space = 8 + 64, seeds = [b"POUTOS_USER_DATA", user.key().as_ref()], bump)]
     pub user_data: Account<'info, UserData>,
+    #[account(mut)]
+    pub upline_data: Account<'info, UserData>,
     #[account(mut, constraint = airdrop_data.token_mint == program_token_account.mint)]
     pub program_token_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
@@ -136,7 +151,7 @@ pub struct UserData {
     pub claimed: bool,
     pub total_allocation: u64,
     pub total_claimed: u64,
-    pub rererral_count: u64,
+    pub referral_count: u64,
 }
 
 #[error_code]

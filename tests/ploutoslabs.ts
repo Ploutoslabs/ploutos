@@ -43,6 +43,14 @@ describe('ploutoslabs', () => {
       program.programId
     );
 
+    const [adminDataPDA] = await PublicKey.findProgramAddress(
+      [
+        Buffer.from(anchor.utils.bytes.utf8.encode('POUTOS_USER_DATA')),
+        admin.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
     await program.rpc.initialize(
       feeReceiver,
       feeAmount,
@@ -52,6 +60,7 @@ describe('ploutoslabs', () => {
       {
         accounts: {
           data: dataAccount,
+          userData: adminDataPDA,
           user: admin.publicKey,
           systemProgram: SystemProgram.programId,
         },
@@ -131,6 +140,14 @@ describe('ploutoslabs', () => {
       1000000000 // 10 million tokens, adjust the amount as necessary
     );
 
+    const [adminDataPDA] = await PublicKey.findProgramAddress(
+      [
+        Buffer.from(anchor.utils.bytes.utf8.encode('POUTOS_USER_DATA')),
+        admin.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
     await program.rpc.initialize(
       feeReceiver,
       feeAmount,
@@ -140,6 +157,7 @@ describe('ploutoslabs', () => {
       {
         accounts: {
           data: dataAccount,
+          userData: adminDataPDA,
           user: admin.publicKey,
           systemProgram: SystemProgram.programId,
         },
@@ -171,6 +189,8 @@ describe('ploutoslabs', () => {
       user.publicKey
     );
 
+    const adminData = await program.account.userData.fetch(adminDataPDA);
+
     // Claim Airdrop
     await program.rpc.claimAirdrop({
       accounts: {
@@ -181,6 +201,7 @@ describe('ploutoslabs', () => {
         tokenProgram: TOKEN_PROGRAM_ID,
         airdropData: dataAccount,
         userData: userDataPDA,
+        uplineData: adminDataPDA,
         systemProgram: SystemProgram.programId,
       },
       signers: [user],
@@ -194,7 +215,7 @@ describe('ploutoslabs', () => {
       userAccountInfo.value.amount,
       '10',
       'User should have received the correct airdrop amount'
-    ); 
+    );
 
     // Fetch the UserData account after the claim
     const userData = await program.account.userData.fetch(userDataPDA);
@@ -210,9 +231,12 @@ describe('ploutoslabs', () => {
       'Claim timestamp should be recent'
     );
     assert.ok(userData.claimed, 'Claimed should be set to true');
-    assert.ok(Number(userData.totalAllocation) == 1000, 'Total allocation is wrong');
+    assert.ok(
+      Number(userData.totalAllocation) == 1000,
+      'Total allocation is wrong'
+    );
     assert.ok(Number(userData.totalClaimed) == 10, 'Incorrect total claimed');
-    assert.ok(Number(userData.rererralCount) == 0, 'Incorrect referral count');
+    assert.ok(Number(userData.referralCount) == 0, 'Incorrect referral count');
 
     // Verify SOL balances after fee transfer
     const userFinalBalance = await provider.connection.getBalance(
@@ -235,6 +259,20 @@ describe('ploutoslabs', () => {
         new anchor.BN(feeReceiverInitialBalance).add(feeAmount)
       ),
       'Fee receiver SOL balance should increase by the fee amount'
+    );
+
+    // check referral
+
+    const adminDataFinal = await program.account.userData.fetch(adminDataPDA);
+    assert.ok(
+      Number(adminDataFinal.referralCount) ==
+        Number(adminData.referralCount) + 1,
+      'Expected upline referral count to be increased'
+    );
+    assert.ok(
+      Number(adminDataFinal.totalAllocation) ==
+        Number(adminData.totalAllocation) + 100,
+      'Expected upline total allocation to be increased'
     );
   });
 });
