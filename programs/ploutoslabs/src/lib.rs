@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, TokenAccount, Transfer, Token};
+use anchor_lang::solana_program::system_instruction;
+use anchor_lang::solana_program::program::invoke;
 
 declare_id!("9J3vvSh8r7TYxRUKKgskGMaexMj1BCVnmm2j8LBGVeS5");
 
@@ -23,6 +25,9 @@ pub mod ploutoslabs {
     }
 
     pub fn claim_airdrop(ctx: Context<ClaimAirdrop>) -> Result<()> {
+        if ctx.accounts.user_data.claimed {
+            return Err(ErrorCode::AirdropAlreadyClaimed.into());
+        }
         // Derive the PDA (dataAccount) that is the authority of the token account
         let (data_account_pda, bump_seed) = Pubkey::find_program_address(
             &[
@@ -34,6 +39,28 @@ pub mod ploutoslabs {
     
         // Assert the derived PDA matches the expected `airdrop_data` account
         require!(data_account_pda == ctx.accounts.airdrop_data.to_account_info().key(), ErrorCode::PdaMismatch);
+
+
+        let clock = Clock::get().unwrap();
+        ctx.accounts.user_data.claim_timestamp = clock.unix_timestamp;
+        ctx.accounts.user_data.claimed = true;
+
+        let claim_amount = ctx.accounts.airdrop_data.airdrop_amount ;
+        ctx.accounts.user_data.total_allocation = claim_amount;
+
+        let transfer_fee_instruction = system_instruction::transfer(
+            ctx.accounts.user.to_account_info().key,
+            ctx.accounts.admin_wallet.key,
+            ctx.accounts.airdrop_data.fee_amount,
+        );
+    
+        invoke(
+            &transfer_fee_instruction,
+            &[
+                ctx.accounts.user.to_account_info(),
+                ctx.accounts.admin_wallet.to_account_info(),
+            ],
+        )?;
     
         let admin_wallet_key = ctx.accounts.admin_wallet.key();
         let seeds = &[
@@ -44,43 +71,21 @@ pub mod ploutoslabs {
         let signer = &[&seeds[..]];
 
     
-        // Set up the CPI to the SPL Token program's `Transfer` instruction
-        let cpi_accounts = Transfer {
+        // Transfer 1% of claim to user's token account
+        let cpi_user_token_accounts = Transfer {
             from: ctx.accounts.program_token_account.to_account_info(),
             to: ctx.accounts.user_token_account.to_account_info(),
             authority: ctx.accounts.airdrop_data.to_account_info(),
         };
     
         let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
+        let cpi_cpi_user_token_accounts_ctx = CpiContext::new_with_signer(cpi_program, cpi_user_token_accounts, signer);
     
-        // Perform the transfer
-        token::transfer(cpi_ctx, ctx.accounts.airdrop_data.airdrop_amount)?;
+        // Perform the transfer of 1% to the user
+        token::transfer(cpi_cpi_user_token_accounts_ctx, claim_amount/100)?;
+
+        ctx.accounts.user_data.total_claimed = claim_amount/100;
     
-        Ok(())
-    }
-    
-
-    pub fn claim_airdropa(ctx: Context<ClaimAirdrop>) -> Result<()> {
-        let airdrop_data = &ctx.accounts.airdrop_data;
-
-        let _fee_amount = airdrop_data.fee_amount;
-        let claim_amount = airdrop_data.airdrop_amount;
-
-        // // Transfer the fee from the user to the admin wallet
-        // **ctx.accounts.user.to_account_info().try_borrow_mut_lamports()? -= fee_amount;
-        // **ctx.accounts.admin_wallet.to_account_info().try_borrow_mut_lamports()? += fee_amount;
-
-        // Transfer the airdrop SPL token from the program's account to the user's account
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.program_token_account.to_account_info(),
-            to: ctx.accounts.user_token_account.to_account_info(),
-            authority: ctx.accounts.program_token_account.to_account_info(),
-        };
-        let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
-        token::transfer(cpi_context, claim_amount)?;
-
         Ok(())
     }
 }
@@ -115,6 +120,8 @@ pub struct ClaimAirdrop<'info> {
     pub admin_wallet: AccountInfo<'info>,
     #[account(mut)]
     pub user_token_account: Account<'info, TokenAccount>,
+    #[account(init, payer = user, space = 8 + 64, seeds = [b"POUTOS_USER_DATA", user.key().as_ref()], bump)]
+    pub user_data: Account<'info, UserData>,
     #[account(mut, constraint = airdrop_data.token_mint == program_token_account.mint)]
     pub program_token_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
@@ -123,6 +130,14 @@ pub struct ClaimAirdrop<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[account]
+pub struct UserData {
+    pub claim_timestamp: i64,
+    pub claimed: bool,
+    pub total_allocation: u64,
+    pub total_claimed: u64,
+    pub rererral_count: u64,
+}
 
 #[error_code]
 pub enum ErrorCode {
@@ -132,4 +147,6 @@ pub enum ErrorCode {
     MintMismatch,
     #[msg("PDA mismatch")]
     PdaMismatch,
+    #[msg("The airdrop has already been claimed by this user")]
+    AirdropAlreadyClaimed,
 }
