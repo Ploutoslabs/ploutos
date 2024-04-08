@@ -275,4 +275,126 @@ describe('ploutoslabs', () => {
       'Expected upline total allocation to be increased'
     );
   });
+
+  it('Allows the admin to increase allocation', async () => {
+    const admin = Keypair.generate();
+    const feeAmount = new anchor.BN(1000000);
+    const tokenMint = Keypair.generate().publicKey;
+    const reserveAmount = new anchor.BN(10000000);
+    const airdropAmount = new anchor.BN(1000);
+
+    // Fund the user account to pay for transactions
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(admin.publicKey, 1000000000), // Requesting 1 SOL
+      'confirmed'
+    );
+
+    const [dataAccount, _] = await PublicKey.findProgramAddress(
+      [
+        anchor.utils.bytes.utf8.encode('PLOUTOS_ROOT'),
+        admin.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    const [adminDataPDA] = await PublicKey.findProgramAddress(
+      [
+        Buffer.from(anchor.utils.bytes.utf8.encode('POUTOS_USER_DATA')),
+        admin.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    await program.rpc.initialize(
+      admin.publicKey,
+      feeAmount,
+      tokenMint,
+      reserveAmount,
+      airdropAmount,
+      {
+        accounts: {
+          data: dataAccount,
+          userData: adminDataPDA,
+          user: admin.publicKey,
+          systemProgram: SystemProgram.programId,
+        },
+        signers: [admin],
+      }
+    );
+
+    const initialUserData = await program.account.userData.fetch(adminDataPDA);
+
+    const additionalAllocation = new anchor.BN(500);
+    // Simulate admin increasing the user's allocation
+    await program.rpc.increaseAllocation(additionalAllocation, {
+      accounts: {
+        ploutosData: dataAccount, // The account holding the admin wallet info, replace with actual account
+        userData: adminDataPDA,
+        adminWallet: admin.publicKey, // This needs to match the admin wallet stored in PloutosData
+        user: admin.publicKey, // Admin signs the transaction
+      },
+      signers: [admin],
+    });
+
+    // Fetch the updated UserData account
+    const updatedUserData = await program.account.userData.fetch(adminDataPDA);
+
+    // Verify the allocation was increased correctly
+    assert.ok(
+      updatedUserData.totalAllocation.eq(
+        initialUserData.totalAllocation.add(additionalAllocation)
+      ),
+      'Allocation should be increased by the specified amount'
+    );
+  });
+
+  it('Allows a user to unlock their allocation', async () => {
+    const admin = Keypair.generate();
+    const feeAmount = new anchor.BN(1000000);
+    const tokenMint = Keypair.generate().publicKey;
+    const reserveAmount = new anchor.BN(10000000);
+    const airdropAmount = new anchor.BN(1000);
+
+    // Fund the user account to pay for transactions
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(admin.publicKey, 1000000000), // Requesting 1 SOL
+      'confirmed'
+    );
+
+    const [dataAccount, _] = await PublicKey.findProgramAddress(
+      [
+        anchor.utils.bytes.utf8.encode('PLOUTOS_ROOT'),
+        admin.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    const [adminDataPDA] = await PublicKey.findProgramAddress(
+      [
+        Buffer.from(anchor.utils.bytes.utf8.encode('POUTOS_USER_DATA')),
+        admin.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    await program.rpc.initialize(
+      admin.publicKey,
+      feeAmount,
+      tokenMint,
+      reserveAmount,
+      airdropAmount,
+      {
+        accounts: {
+          data: dataAccount,
+          userData: adminDataPDA,
+          user: admin.publicKey,
+          systemProgram: SystemProgram.programId,
+        },
+        signers: [admin],
+      }
+    );
+    
+    // TODO: increase allocation, work on time simulation and test the unlocking
+
+  });
 });

@@ -99,17 +99,68 @@ pub mod ploutoslabs {
     
         Ok(())
     }
-}
 
-#[account]
-pub struct PloutosData {
-    pub admin_wallet: Pubkey,
-    pub fee_amount: u64,
-    pub token_mint: Pubkey,
-    pub program_token_account: Pubkey,
-    pub reserve_amount: u64,
-    pub airdrop_amount: u64,
-    pub initialized: bool,
+    pub fn increase_allocation(ctx: Context<IncreaseAllocation>, additional_amount: u64) -> Result<()> {
+        let user_data = &mut ctx.accounts.user_data;
+        user_data.total_allocation += additional_amount;
+        Ok(())
+    }
+    
+    pub fn unlock_allocation(ctx: Context<UnlockAllocation>) -> Result<()> {
+        let user_data = &mut ctx.accounts.user_data;
+        let airdrop_data = &ctx.accounts.airdrop_data;
+        let clock = Clock::get()?;
+        let current_timestamp = clock.unix_timestamp;
+    
+        // Ensure the unlock period has been met
+        require!(
+            current_timestamp - user_data.claim_timestamp >= 30 * 86400,
+            ErrorCode::UnlockPeriodNotMet
+        );
+    
+        // Calculate the amount to unlock
+        let allocation_to_unlock = user_data.total_allocation / 100; 
+    
+        // Derive the PDA that is the authority of the token account, using admin_wallet from airdrop_data
+        let (data_account_pda, bump_seed) = Pubkey::find_program_address(
+            &[
+                b"PLOUTOS_ROOT".as_ref(), 
+                airdrop_data.admin_wallet.as_ref()
+            ],
+            &ctx.program_id,
+        );
+    
+        // Ensure derived PDA matches the expected authority
+        require!(
+            data_account_pda == *ctx.accounts.program_token_account.to_account_info().key,
+            ErrorCode::PdaMismatch
+        );
+    
+        let seeds = &[
+            b"PLOUTOS_ROOT".as_ref(), 
+            airdrop_data.admin_wallet.as_ref(), 
+            &[bump_seed]
+        ];
+        let signer_seeds = &[&seeds[..]];
+    
+        // Prepare the transfer from the program's account to the user's token account
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.program_token_account.to_account_info(),
+            to: ctx.accounts.user_token_account.to_account_info(),
+            authority: ctx.accounts.program_token_account.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
+        token::transfer(cpi_ctx, allocation_to_unlock)?;
+
+
+        // Update the user data
+        user_data.claim_timestamp = current_timestamp;
+        user_data.total_claimed += allocation_to_unlock;
+
+        Ok(())
+    }
+    
 }
 
 #[derive(Accounts)]
@@ -145,6 +196,46 @@ pub struct ClaimAirdrop<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct IncreaseAllocation<'info> {
+    #[account(has_one = admin_wallet, constraint = admin_wallet.key() == user.key())]
+    pub ploutos_data: Account<'info, PloutosData>,
+    #[account(mut)]
+    pub user_data: Account<'info, UserData>,
+    /// CHECK: This is a system account and its ownership is verified through the `has_one = admin_wallet` constraint.
+    pub admin_wallet: AccountInfo<'info>,
+    #[account(mut)]
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct UnlockAllocation<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(mut)]
+    pub user_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub user_data: Account<'info, UserData>,
+    #[account(mut)]
+    pub airdrop_data: Account<'info, PloutosData>,
+    /// CHECK: This account is the SPL token account owned by the program used for distributing airdrops. It is expected to match the token mint specified in `PloutosData`.
+    #[account(mut)]
+    pub program_token_account: AccountInfo<'info>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[account]
+pub struct PloutosData {
+    pub admin_wallet: Pubkey,
+    pub fee_amount: u64,
+    pub token_mint: Pubkey,
+    pub program_token_account: Pubkey,
+    pub reserve_amount: u64,
+    pub airdrop_amount: u64,
+    pub initialized: bool,
+}
+
 #[account]
 pub struct UserData {
     pub claim_timestamp: i64,
@@ -164,4 +255,6 @@ pub enum ErrorCode {
     PdaMismatch,
     #[msg("The airdrop has already been claimed by this user")]
     AirdropAlreadyClaimed,
+    #[msg("The unlock period has not yet been met")]
+    UnlockPeriodNotMet,
 }
