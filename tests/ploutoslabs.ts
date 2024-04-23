@@ -25,7 +25,6 @@ describe('ploutoslabs', () => {
     const admin = Keypair.generate();
     const feeReceiver = Keypair.generate().publicKey;
     const feeAmount = new anchor.BN(1000000);
-    const tokenMint = Keypair.generate().publicKey;
     const reserveAmount = new anchor.BN(10000000);
     const airdropAmount = new anchor.BN(1000);
 
@@ -41,6 +40,34 @@ describe('ploutoslabs', () => {
         admin.publicKey.toBuffer(),
       ],
       program.programId
+    );
+
+    // Create mint
+    const tokenMint = await createMint(
+      provider.connection,
+      admin,
+      admin.publicKey,
+      null,
+      9 // Assuming 9 decimal places for the token.
+    );
+
+    // Create the program's token account which will hold tokens for airdrop
+    const programTokenAccount = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      admin,
+      tokenMint,
+      dataAccount,
+      true
+    );
+
+    // Mint to the program's account
+    await mintTo(
+      provider.connection,
+      admin,
+      tokenMint,
+      programTokenAccount.address,
+      admin,
+      1000000000 // 10 million tokens, adjust the amount as necessary
     );
 
     const [adminDataPDA] = await PublicKey.findProgramAddress(
@@ -62,6 +89,7 @@ describe('ploutoslabs', () => {
           data: dataAccount,
           userData: adminDataPDA,
           user: admin.publicKey,
+          programTokenAccount: programTokenAccount.address,
           systemProgram: SystemProgram.programId,
         },
         signers: [admin],
@@ -159,6 +187,7 @@ describe('ploutoslabs', () => {
           data: dataAccount,
           userData: adminDataPDA,
           user: admin.publicKey,
+          programTokenAccount: airdropSourceAccount.address,
           systemProgram: SystemProgram.programId,
         },
         signers: [admin],
@@ -279,7 +308,6 @@ describe('ploutoslabs', () => {
   it('Allows the admin to increase allocation', async () => {
     const admin = Keypair.generate();
     const feeAmount = new anchor.BN(1000000);
-    const tokenMint = Keypair.generate().publicKey;
     const reserveAmount = new anchor.BN(10000000);
     const airdropAmount = new anchor.BN(1000);
 
@@ -305,6 +333,34 @@ describe('ploutoslabs', () => {
       program.programId
     );
 
+    // Create mint
+    const tokenMint = await createMint(
+      provider.connection,
+      admin,
+      admin.publicKey,
+      null,
+      9 // Assuming 9 decimal places for the token.
+    );
+
+    // Create the program's token account which will hold tokens for airdrop
+    const airdropSourceAccount = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      admin,
+      tokenMint,
+      dataAccount,
+      true
+    );
+
+    // Mint to the program's account
+    await mintTo(
+      provider.connection,
+      admin,
+      tokenMint,
+      airdropSourceAccount.address,
+      admin,
+      1000000000 // 10 million tokens, adjust the amount as necessary
+    );
+
     await program.rpc.initialize(
       admin.publicKey,
       feeAmount,
@@ -316,6 +372,7 @@ describe('ploutoslabs', () => {
           data: dataAccount,
           userData: adminDataPDA,
           user: admin.publicKey,
+          programTokenAccount: airdropSourceAccount.address,
           systemProgram: SystemProgram.programId,
         },
         signers: [admin],
@@ -348,10 +405,9 @@ describe('ploutoslabs', () => {
     );
   });
 
-  it('Allows a user to unlock their allocation', async () => {
+  it('Should not increase allowcation where ended', async () => {
     const admin = Keypair.generate();
     const feeAmount = new anchor.BN(1000000);
-    const tokenMint = Keypair.generate().publicKey;
     const reserveAmount = new anchor.BN(10000000);
     const airdropAmount = new anchor.BN(1000);
 
@@ -377,6 +433,34 @@ describe('ploutoslabs', () => {
       program.programId
     );
 
+    // Create mint
+    const tokenMint = await createMint(
+      provider.connection,
+      admin,
+      admin.publicKey,
+      null,
+      9 // Assuming 9 decimal places for the token.
+    );
+
+    // Create the program's token account which will hold tokens for airdrop
+    const airdropSourceAccount = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      admin,
+      tokenMint,
+      dataAccount,
+      true
+    );
+
+    // Mint to the program's account
+    await mintTo(
+      provider.connection,
+      admin,
+      tokenMint,
+      airdropSourceAccount.address,
+      admin,
+      1000000000 // 10 million tokens, adjust the amount as necessary
+    );
+
     await program.rpc.initialize(
       admin.publicKey,
       feeAmount,
@@ -388,13 +472,114 @@ describe('ploutoslabs', () => {
           data: dataAccount,
           userData: adminDataPDA,
           user: admin.publicKey,
+          programTokenAccount: airdropSourceAccount.address,
           systemProgram: SystemProgram.programId,
         },
         signers: [admin],
       }
     );
-    
-    // TODO: increase allocation, work on time simulation and test the unlocking
 
+    await program.rpc.endAllocation({
+      accounts: {
+        ploutosData: dataAccount,
+        adminWallet: admin.publicKey,
+      },
+      signers: [admin],
+    });
+
+    const additionalAllocation = new anchor.BN(500);
+    // Simulate admin increasing the user's allocation
+
+    try {
+      await program.rpc.increaseAllocation(additionalAllocation, {
+        accounts: {
+          ploutosData: dataAccount, // The account holding the admin wallet info, replace with actual account
+          userData: adminDataPDA,
+          adminWallet: admin.publicKey, // This needs to match the admin wallet stored in PloutosData
+          user: admin.publicKey, // Admin signs the transaction
+        },
+        signers: [admin],
+      });
+      assert.fail("increaseAllocation should not succeed after endAllocation");
+    } catch (error) {
+      assert.include(error.message, "Allocation has ended");
+    }
+  });
+
+  it('Allows a user to unlock their allocation', async () => {
+    const admin = Keypair.generate();
+    const feeAmount = new anchor.BN(1000000);
+    const reserveAmount = new anchor.BN(10000000);
+    const airdropAmount = new anchor.BN(1000);
+
+    // Fund the user account to pay for transactions
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(admin.publicKey, 1000000000), // Requesting 1 SOL
+      'confirmed'
+    );
+
+    const [dataAccount, _] = await PublicKey.findProgramAddress(
+      [
+        anchor.utils.bytes.utf8.encode('PLOUTOS_ROOT'),
+        admin.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    const [adminDataPDA] = await PublicKey.findProgramAddress(
+      [
+        Buffer.from(anchor.utils.bytes.utf8.encode('POUTOS_USER_DATA')),
+        admin.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // Create mint
+    const tokenMint = await createMint(
+      provider.connection,
+      admin,
+      admin.publicKey,
+      null,
+      9 // Assuming 9 decimal places for the token.
+    );
+
+    // Create the program's token account which will hold tokens for airdrop
+    const airdropSourceAccount = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      admin,
+      tokenMint,
+      dataAccount,
+      true
+    );
+
+    // Mint to the program's account
+    await mintTo(
+      provider.connection,
+      admin,
+      tokenMint,
+      airdropSourceAccount.address,
+      admin,
+      1000000000 // 10 million tokens, adjust the amount as necessary
+    );
+
+    await program.rpc.initialize(
+      admin.publicKey,
+      feeAmount,
+      tokenMint,
+      reserveAmount,
+      airdropAmount,
+      {
+        accounts: {
+          data: dataAccount,
+          userData: adminDataPDA,
+          user: admin.publicKey,
+          programTokenAccount: airdropSourceAccount.address,
+          systemProgram: SystemProgram.programId,
+        },
+        signers: [admin],
+      }
+    );
+
+    // TODO: increase allocation, work on time simulation and test the unlocking
   });
 });

@@ -9,24 +9,35 @@ declare_id!("9J3vvSh8r7TYxRUKKgskGMaexMj1BCVnmm2j8LBGVeS5");
 pub mod ploutoslabs {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, fee_receiver: Pubkey, fee_amount: u64, token_mint: Pubkey, reserve_amount: u64, airdrop_amount: u64) -> Result<()> {
+    pub fn initialize(ctx: Context<Initialize>, fee_receiver: Pubkey, fee_amount: u64, token_mint: Pubkey,
+         reserve_amount: u64, airdrop_amount: u64) -> Result<()> {
+        
         let data = &mut ctx.accounts.data;
         if data.initialized {
             return err!(ErrorCode::AlreadyInitialized);
         }
+
+        // Assert that the program token account is initialized correctly,
+        //  has enough balance and is controlled by the program
+        require!(
+            ctx.accounts.program_token_account.mint == token_mint,
+            ErrorCode::InvalidTokenAccount
+        );
+        require!(
+            &ctx.accounts.program_token_account.owner == &data.to_account_info().key(),
+            ErrorCode::InvalidTokenAccountOwner
+        );
+        require!(
+            ctx.accounts.program_token_account.amount >= reserve_amount,
+            ErrorCode::InsufficientFunds
+        );
+
         data.admin_wallet = fee_receiver;
         data.fee_amount = fee_amount;
         data.token_mint = token_mint;
         data.reserve_amount = reserve_amount;
         data.airdrop_amount = airdrop_amount;
-
-        // 210,000,000
-        // The reserve_amount should contain the
-        // i, airdrop token - 
-        // ii. team allocation
-        // iii. utility creation
-        // verify that the program_token_account has a minimum balance of reserve_amount
-        
+        data.program_token_account = ctx.accounts.program_token_account.key();
 
         let clock = Clock::get()?;
         ctx.accounts.user_data.claim_timestamp = clock.unix_timestamp;
@@ -44,6 +55,13 @@ pub mod ploutoslabs {
         if ctx.accounts.user_data.claimed {
             return Err(ErrorCode::AirdropAlreadyClaimed.into());
         }
+
+        // Ensure that the right program_token_account is passed
+        require!(
+            ctx.accounts.program_token_account.key() == ctx.accounts.airdrop_data.program_token_account,
+            ErrorCode::InvalidTokenAccount
+        );
+
         // Derive the PDA (dataAccount) that is the authority of the token account
         let (data_account_pda, bump_seed) = Pubkey::find_program_address(
             &[
@@ -163,6 +181,12 @@ pub mod ploutoslabs {
             current_timestamp - user_data.claim_timestamp >= 30 * 86400,
             ErrorCode::UnlockPeriodNotMet
         );
+
+        // Ensure that the right program_token_account is passed
+        require!(
+            ctx.accounts.program_token_account.key() == ctx.accounts.airdrop_data.program_token_account,
+            ErrorCode::InvalidTokenAccount
+        );
     
         // Calculate the amount to unlock
         let allocation_to_unlock = user_data.total_allocation / 100; 
@@ -230,6 +254,8 @@ pub struct Initialize<'info> {
     pub user_data: Account<'info, UserData>,
     #[account(mut)]
     pub user: Signer<'info>,
+    #[account()]
+    pub program_token_account: Account<'info, TokenAccount>,
     /// CHECK: this is checked
     pub system_program: Program<'info, System>,
 }
@@ -356,4 +382,7 @@ pub enum ErrorCode {
     AllocationNotEnabled,
     #[msg("You don' the right to perform this zaction")]
     Unauthorized,
+    InvalidTokenAccount,
+    InvalidTokenAccountOwner,
+    InsufficientFunds,
 }
