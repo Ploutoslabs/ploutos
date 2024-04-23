@@ -20,7 +20,15 @@ pub mod ploutoslabs {
         data.reserve_amount = reserve_amount;
         data.airdrop_amount = airdrop_amount;
 
-        let clock = Clock::get().unwrap();
+        // 210,000,000
+        // The reserve_amount should contain the
+        // i, airdrop token - 
+        // ii. team allocation
+        // iii. utility creation
+        // verify that the program_token_account has a minimum balance of reserve_amount
+        
+
+        let clock = Clock::get()?;
         ctx.accounts.user_data.claim_timestamp = clock.unix_timestamp;
         ctx.accounts.user_data.claimed = true;
 
@@ -28,6 +36,7 @@ pub mod ploutoslabs {
         ctx.accounts.user_data.total_allocation = claim_amount;
 
         data.initialized = true;
+        data.allocation_enabled = true;
         Ok(())
     }
 
@@ -48,11 +57,12 @@ pub mod ploutoslabs {
         require!(data_account_pda == ctx.accounts.airdrop_data.to_account_info().key(), ErrorCode::PdaMismatch);
 
 
-        let clock = Clock::get().unwrap();
+        let clock = Clock::get()?;
         ctx.accounts.user_data.claim_timestamp = clock.unix_timestamp;
         ctx.accounts.user_data.claimed = true;
 
-        let claim_amount = ctx.accounts.airdrop_data.airdrop_amount ;
+        let claim_amount = ctx.accounts.airdrop_data.airdrop_amount;
+        // increase user's allocation to allow for claiming of 1% every 30 days
         ctx.accounts.user_data.total_allocation = claim_amount;
 
         let transfer_fee_instruction = system_instruction::transfer(
@@ -77,6 +87,9 @@ pub mod ploutoslabs {
         ];
         let signer = &[&seeds[..]];
 
+        // The logic of the program is to allow to the user to claim 1% of his airdrop amount every 30 days.
+        // The 1% is sent to the user's token account below, while the remaing is sent to him on every call
+        // to the unlokc_allocation fn after every 30 days
     
         // Transfer 1% of claim to user's token account
         let cpi_user_token_accounts = Transfer {
@@ -96,13 +109,46 @@ pub mod ploutoslabs {
         // update upline
         ctx.accounts.upline_data.referral_count += 1;
         ctx.accounts.upline_data.total_allocation += claim_amount/10;
+
+        emit!(AllocationAdded {
+            user: ctx.accounts.user.key(),
+            amount: claim_amount,
+            timestamp: Clock::get()?.unix_timestamp
+        });
+
+        emit!(AllocationUnlocked {
+            by: ctx.accounts.user.key(),
+            amount_unlocked: claim_amount/100,
+            total_claimed: claim_amount/100,
+            timestamp: Clock::get()?.unix_timestamp
+        });
     
         Ok(())
     }
 
     pub fn increase_allocation(ctx: Context<IncreaseAllocation>, additional_amount: u64) -> Result<()> {
+        require!(
+            ctx.accounts.ploutos_data.allocation_enabled,
+            ErrorCode::AllocationNotEnabled
+        );
         let user_data = &mut ctx.accounts.user_data;
         user_data.total_allocation += additional_amount;
+        Ok(())
+    }
+
+    pub fn end_allocation(ctx: Context<EndAllocation>) -> Result<()> {
+        require!(
+            ctx.accounts.ploutos_data.allocation_enabled,
+            ErrorCode::AllocationNotEnabled
+        );
+        let ploutos_data = &mut ctx.accounts.ploutos_data;
+        ploutos_data.allocation_enabled = false;
+
+        emit!(AllocationEnded {
+            by: ctx.accounts.admin_wallet.key(),
+            timestamp: Clock::get()?.unix_timestamp
+        });
+
         Ok(())
     }
     
@@ -120,6 +166,12 @@ pub mod ploutoslabs {
     
         // Calculate the amount to unlock
         let allocation_to_unlock = user_data.total_allocation / 100; 
+
+
+        require!(
+            user_data.total_claimed + allocation_to_unlock <= user_data.total_allocation,
+            ErrorCode::ClaimCompleted
+        );
     
         // Derive the PDA that is the authority of the token account, using admin_wallet from airdrop_data
         let (data_account_pda, bump_seed) = Pubkey::find_program_address(
@@ -127,7 +179,7 @@ pub mod ploutoslabs {
                 b"PLOUTOS_ROOT".as_ref(), 
                 airdrop_data.admin_wallet.as_ref()
             ],
-            &ctx.program_id,
+            ctx.program_id,
         );
     
         // Ensure derived PDA matches the expected authority
@@ -158,6 +210,13 @@ pub mod ploutoslabs {
         user_data.claim_timestamp = current_timestamp;
         user_data.total_claimed += allocation_to_unlock;
 
+        emit!(AllocationUnlocked {
+            by: ctx.accounts.user.key(),
+            amount_unlocked: allocation_to_unlock,
+            total_claimed: user_data.total_claimed + allocation_to_unlock,
+            timestamp: Clock::get()?.unix_timestamp
+        });
+
         Ok(())
     }
     
@@ -165,7 +224,7 @@ pub mod ploutoslabs {
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer=user, space=9000, seeds=[b"PLOUTOS_ROOT".as_ref(), user.key().as_ref()], bump)]
+    #[account(init, payer=user, space=64*7, seeds=[b"PLOUTOS_ROOT".as_ref(), user.key().as_ref()], bump)]
     pub data: Account<'info, PloutosData>,
     #[account(init, payer = user, space = 8 + 64, seeds = [b"POUTOS_USER_DATA", user.key().as_ref()], bump)]
     pub user_data: Account<'info, UserData>,
@@ -209,6 +268,18 @@ pub struct IncreaseAllocation<'info> {
 }
 
 #[derive(Accounts)]
+pub struct EndAllocation<'info> {
+    #[account(
+        mut,
+        has_one = admin_wallet, 
+        constraint = ploutos_data.admin_wallet == admin_wallet.key() @ ErrorCode::Unauthorized 
+    )]
+    pub ploutos_data: Account<'info, PloutosData>,
+    /// CHECK: This is a system account and its ownership is verified through the `has_one = admin_wallet` constraint.
+    pub admin_wallet: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct UnlockAllocation<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
@@ -233,6 +304,7 @@ pub struct PloutosData {
     pub program_token_account: Pubkey,
     pub reserve_amount: u64,
     pub airdrop_amount: u64,
+    pub allocation_enabled: bool,
     pub initialized: bool,
 }
 
@@ -243,6 +315,27 @@ pub struct UserData {
     pub total_allocation: u64,
     pub total_claimed: u64,
     pub referral_count: u64,
+}
+
+#[event]
+pub struct AllocationAdded {
+    pub user: Pubkey,
+    pub amount: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct AllocationEnded {
+    pub by: Pubkey,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct AllocationUnlocked {
+    pub by: Pubkey,
+    pub amount_unlocked: u64,
+    pub total_claimed: u64,
+    pub timestamp: i64,
 }
 
 #[error_code]
@@ -257,4 +350,10 @@ pub enum ErrorCode {
     AirdropAlreadyClaimed,
     #[msg("The unlock period has not yet been met")]
     UnlockPeriodNotMet,
+    #[msg("All allocation has been claimed")]
+    ClaimCompleted,
+    #[msg("Allocation has ended")]
+    AllocationNotEnabled,
+    #[msg("You don' the right to perform this zaction")]
+    Unauthorized,
 }
